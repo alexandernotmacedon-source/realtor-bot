@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: realtor-bot
+    restart: unless-stopped
+    volumes:
+      - ./:/app
+      - ./credentials.json:/app/credentials.json:ro
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    command: python main.py
