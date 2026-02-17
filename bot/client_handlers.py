@@ -321,7 +321,7 @@ async def _search_and_format_apartments(
         for i, match in enumerate(matches, 1):
             lines.append(f"{i}. {inventory_matcher.format_match(match)}")
         
-        lines.append("\n💬 Напишите номер варианта — пришлю фото и детали!")
+        lines.append("\n💬 Напишите номер варианта, или «ещё»")
         
         return "\n".join(lines), matches
         
@@ -374,7 +374,7 @@ async def _complete_client_conversation(
     if apartments_msg:
         completion_msg += apartments_msg
         # Wait for client to select apartment - don't ask for contact yet
-        completion_msg += "\n\n💬 Какой вариант вам понравился? Напишите номер, или скажите если ничего не подошло — подберу ещё!"
+        completion_msg += "\n\n💬 Напишите номер понравившегося варианта, или скажите «ещё»"
         # Save matches for later reference
         context.user_data["shown_apartments"] = matches
         context.user_data["awaiting_apartment_selection"] = True
