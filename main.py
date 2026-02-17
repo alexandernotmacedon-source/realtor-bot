@@ -20,6 +20,7 @@ from telegram.ext import (
     Application,
     CallbackQueryHandler,
     CommandHandler,
+    ContextTypes,
     ConversationHandler,
     MessageHandler,
     filters,
@@ -55,6 +56,55 @@ from bot.drive_handlers import search_followup_handler
 
 
 logger = logging.getLogger(__name__)
+
+
+async def handle_client_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle client text message - wrapper that checks client_info."""
+    # Skip if not a client message (will be handled by other handlers)
+    if not update.effective_user:
+        return
+    
+    # Check if this is a realtor
+    from core.container import Container
+    repo = Container.get_repository()
+    if await repo.get_realtor(update.effective_user.id):
+        return  # Let realtor handlers process
+    
+    # Check if client has active conversation
+    if "client_info" not in context.user_data:
+        # Not in conversation - prompt to start
+        await update.effective_message.reply_text(
+            "👋 Привет! Чтобы начать подбор недвижимости, отправьте /start"
+        )
+        return
+    
+    # Process as client message
+    await handle_client_llm_message(update, context)
+
+
+async def handle_client_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle client voice message - wrapper that checks client_info."""
+    # Skip if not a client message
+    if not update.effective_user:
+        return
+    
+    # Check if this is a realtor
+    from core.container import Container
+    repo = Container.get_repository()
+    if await repo.get_realtor(update.effective_user.id):
+        return  # Let realtor handlers process
+    
+    # Check if client has active conversation
+    if "client_info" not in context.user_data:
+        if update.effective_message:
+            await update.effective_message.reply_text(
+                "🎙 Получил голосовое сообщение!\n\n"
+                "Но сначала отправьте /start чтобы начать диалог."
+            )
+        return
+    
+    # Process as client voice
+    await handle_client_voice(update, context)
 
 
 def setup_logging() -> None:
@@ -100,22 +150,20 @@ def build_application() -> Application:
         persistent=False,
     )
 
-    # Client conversation (LLM-powered, single state)
-    client_conv = ConversationHandler(
-        entry_points=[CommandHandler("start", start_command)],
-        states={
-            STATE_CLIENT_COMPLETE: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_client_llm_message),
-                MessageHandler(filters.VOICE, handle_client_voice),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", cancel_command)],
-        name="client_llm_dialog",
-        persistent=False,
-    )
-
     application.add_handler(realtor_conv)
-    application.add_handler(client_conv)
+    
+    # Client /start handler (separate from conversation)
+    application.add_handler(CommandHandler("start", start_command))
+    
+    # Client message handler (not using ConversationHandler for persistence)
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_client_message),
+        group=0,
+    )
+    application.add_handler(
+        MessageHandler(filters.VOICE, handle_client_voice_message),
+        group=0,
+    )
 
     # Realtor commands
     application.add_handler(CommandHandler("clients", clients_command))
