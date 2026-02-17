@@ -281,7 +281,8 @@ async def _notify_realtor_about_new_client(
 
 async def _search_and_format_apartments(
     client_info: Dict[str, Any],
-    max_results: int = 5
+    max_results: int = 5,
+    offset: int = 0
 ) -> tuple[Optional[str], list]:
     """Search inventory for matching apartments and format results.
     
@@ -310,7 +311,8 @@ async def _search_and_format_apartments(
             location=client_info.get("location"),
             rooms=client_info.get("rooms"),
             ready_status=client_info.get("ready_status"),
-            max_results=max_results
+            max_results=max_results,
+            offset=offset
         )
         
         if not matches:
@@ -375,9 +377,10 @@ async def _complete_client_conversation(
         completion_msg += apartments_msg
         # Wait for client to select apartment - don't ask for contact yet
         completion_msg += "\n\n💬 Напишите номер понравившегося варианта, или скажите «ещё»"
-        # Save matches for later reference
+        # Save matches for later reference and initialize offset
         context.user_data["shown_apartments"] = matches
         context.user_data["awaiting_apartment_selection"] = True
+        context.user_data["search_offset"] = 0
     else:
         completion_msg += "\n\n🔍 Сейчас проверю наличие подходящих вариантов и пришлю результаты."
 
@@ -408,15 +411,32 @@ async def _handle_apartment_selection(
 
     # Check if client wants more options
     if any(word in sanitized for word in ['ещё', 'еще', 'следующие', 'дальше', 'больше']):
-        await update.effective_message.reply_text(
-            "🔍 Ищу дополнительные варианты..."
+        await update.effective_message.reply_text("🔍 Ищу ещё варианты...")
+        
+        # Get current offset and show next batch
+        current_offset = context.user_data.get("search_offset", 0)
+        new_offset = current_offset + 5
+        
+        client_info = context.user_data.get("client_info", {})
+        apartments_msg, matches = await _search_and_format_apartments(
+            client_info, max_results=5, offset=new_offset
         )
-        # TODO: Show next 5 apartments with offset
-        await update.effective_message.reply_text(
-            "(Функция «ещё варианты» в разработке — пока можно уточнить критерии для нового поиска)"
-        )
-        context.user_data.pop("awaiting_apartment_selection", None)
-        return 8
+        
+        if apartments_msg and matches:
+            await update.effective_message.reply_text(apartments_msg, parse_mode="HTML")
+            # Save new offset and matches
+            context.user_data["search_offset"] = new_offset
+            context.user_data["shown_apartments"] = matches
+            # Keep awaiting_apartment_selection True
+            return 8
+        else:
+            await update.effective_message.reply_text(
+                "😕 Больше нет вариантов по вашим критериям. "
+                "Попробуем изменить условия поиска?"
+            )
+            context.user_data.pop("awaiting_apartment_selection", None)
+            context.user_data.pop("search_offset", None)
+            return 8
 
     # Check if client said nothing fits
     negative_responses = ['не', 'ничего', 'не подошло', 'не нравится', 'другое', 'другой', 'нет']

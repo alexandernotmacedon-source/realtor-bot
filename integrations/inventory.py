@@ -268,6 +268,7 @@ class InventoryMatcher:
         rooms: Optional[str] = None,
         ready_status: Optional[str] = None,
         max_results: int = 5,
+        offset: int = 0,
     ) -> List[InventoryMatch]:
         """Find matching apartments in inventory."""
 
@@ -361,7 +362,7 @@ class InventoryMatcher:
                     )
 
         results.sort(key=lambda m: m.score, reverse=True)
-        return results[:max_results]
+        return results[offset:offset + max_results]
 
     def _parse_budget_range(self, budget_text: Optional[str]) -> Tuple[Optional[float], Optional[float]]:
         if not budget_text:
