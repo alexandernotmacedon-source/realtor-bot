@@ -411,10 +411,22 @@ class InventoryMatcher:
 
         text = str(size_text).lower()
 
+        # Range: 70-100
         m = re.search(r"(\d+(?:[.,]\d+)?)\s*-\s*(\d+(?:[.,]\d+)?)", text)
         if m:
             return self.normalize_size(m.group(1)), self.normalize_size(m.group(2))
 
+        # "от X" / "не менее X" / "min X" -> X to infinity
+        m = re.search(r"(?:от|не менее|минимум|min)\s*(\d+(?:[.,]\d+)?)", text)
+        if m:
+            return self.normalize_size(m.group(1)), float("inf")
+
+        # "до X" / "не более X" -> 0 to X
+        m = re.search(r"(?:до|не более|максимум|max)\s*(\d+(?:[.,]\d+)?)", text)
+        if m:
+            return 0.0, self.normalize_size(m.group(1))
+
+        # Single number -> ±20%
         single = self.normalize_size(text)
         if single is not None:
             return single * 0.8, single * 1.2
