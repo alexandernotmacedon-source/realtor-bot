@@ -14,6 +14,7 @@ import asyncio
 import logging
 import os
 import tempfile
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
