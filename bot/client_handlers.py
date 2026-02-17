@@ -667,19 +667,36 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         logger.info(f"[DEBUG] No existing client found for user {user.id}")
 
     # Setup client info with chosen realtor
-    context.user_data["client_info"] = {
-        "telegram_id": user.id,
-        "telegram_username": user.username,
-        "name": user.full_name,
-        "realtor_id": target_realtor.id,
-    }
+    if is_returning and existing_client:
+        # Restore from database - client already exists
+        context.user_data["client_info"] = {
+            "telegram_id": existing_client.telegram_id,
+            "telegram_username": existing_client.telegram_username,
+            "name": existing_client.name,
+            "realtor_id": existing_client.realtor_id,
+            "budget": existing_client.budget,
+            "size": existing_client.size,
+            "location": existing_client.location,
+            "rooms": existing_client.rooms,
+            "ready_status": existing_client.ready_status,
+            "notes": existing_client.notes,
+            "contact": existing_client.contact,
+        }
+    else:
+        context.user_data["client_info"] = {
+            "telegram_id": user.id,
+            "telegram_username": user.username,
+            "name": user.full_name,
+            "realtor_id": target_realtor.id,
+        }
+    
     context.user_data["conversation"] = []
 
     # Send welcome message using template with realtor's name
     if is_returning:
-        welcome_text = f"👋 С возвращением! Рада снова помочь с подбором недвижимости.\n\nДавайте уточним критерии — на какую сумму сейчас рассматриваете покупку? 💫"
+        welcome_text = f"👋 С возвращением! Продолжим подбор?"
     else:
-        welcome_text = f"Здравствуйте! Меня зовут {target_realtor.full_name}, я риелтор по недвижимости в Батуми. Рада помочь с подбором квартиры! 💫\n\nДавайте начнём с бюджета — на какую сумму вы рассматриваете покупку?"
+        welcome_text = f"Здравствуйте! Я ассистент риелтора в Батуми. Какой бюджет рассматриваете?"
     await update.effective_message.reply_text(welcome_text)
     
     # Initialize conversation history for LLM

@@ -70,13 +70,35 @@ async def handle_client_message(update: Update, context: ContextTypes.DEFAULT_TY
     if await repo.get_realtor(update.effective_user.id):
         return  # Let realtor handlers process
     
-    # Check if client has active conversation
+    # Check if client has active conversation in memory
     if "client_info" not in context.user_data:
-        # Not in conversation - prompt to start
-        await update.effective_message.reply_text(
-            "👋 Привет! Чтобы начать подбор недвижимости, отправьте /start"
-        )
-        return
+        # Try to load from database (client might exist from previous session)
+        existing_client = await repo.get_client_by_telegram_global(update.effective_user.id)
+        if existing_client:
+            # Restore client info from database
+            context.user_data["client_info"] = {
+                "telegram_id": existing_client.telegram_id,
+                "telegram_username": existing_client.telegram_username,
+                "name": existing_client.name,
+                "realtor_id": existing_client.realtor_id,
+                "budget": existing_client.budget,
+                "size": existing_client.size,
+                "location": existing_client.location,
+                "rooms": existing_client.rooms,
+                "ready_status": existing_client.ready_status,
+                "notes": existing_client.notes,
+                "contact": existing_client.contact,
+            }
+            context.user_data["conversation"] = [
+                {"role": "system", "content": f"Риелтор ID: {existing_client.realtor_id}"}
+            ]
+            logger.info(f"Restored client {update.effective_user.id} from database after restart")
+        else:
+            # Not in conversation - prompt to start
+            await update.effective_message.reply_text(
+                "👋 Привет! Чтобы начать подбор недвижимости, отправьте /start"
+            )
+            return
     
     # Process as client message
     await handle_client_llm_message(update, context)
@@ -94,14 +116,36 @@ async def handle_client_voice_message(update: Update, context: ContextTypes.DEFA
     if await repo.get_realtor(update.effective_user.id):
         return  # Let realtor handlers process
     
-    # Check if client has active conversation
+    # Check if client has active conversation in memory
     if "client_info" not in context.user_data:
-        if update.effective_message:
-            await update.effective_message.reply_text(
-                "🎙 Получил голосовое сообщение!\n\n"
-                "Но сначала отправьте /start чтобы начать диалог."
-            )
-        return
+        # Try to load from database (client might exist from previous session)
+        existing_client = await repo.get_client_by_telegram_global(update.effective_user.id)
+        if existing_client:
+            # Restore client info from database
+            context.user_data["client_info"] = {
+                "telegram_id": existing_client.telegram_id,
+                "telegram_username": existing_client.telegram_username,
+                "name": existing_client.name,
+                "realtor_id": existing_client.realtor_id,
+                "budget": existing_client.budget,
+                "size": existing_client.size,
+                "location": existing_client.location,
+                "rooms": existing_client.rooms,
+                "ready_status": existing_client.ready_status,
+                "notes": existing_client.notes,
+                "contact": existing_client.contact,
+            }
+            context.user_data["conversation"] = [
+                {"role": "system", "content": f"Риелтор ID: {existing_client.realtor_id}"}
+            ]
+            logger.info(f"Restored client {update.effective_user.id} from database after restart")
+        else:
+            if update.effective_message:
+                await update.effective_message.reply_text(
+                    "🎙 Получил голосовое сообщение!\n\n"
+                    "Но сначала отправьте /start чтобы начать диалог."
+                )
+            return
     
     # Process as client voice
     await handle_client_voice(update, context)
