@@ -682,6 +682,30 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             "notes": existing_client.notes,
             "contact": existing_client.contact,
         }
+        # Reconstruct conversation history from saved data
+        context.user_data["conversation"] = [
+            {"role": "system", "content": f"Риелтор: {target_realtor.full_name}"}
+        ]
+        # Add what we know about the client
+        client_summary = []
+        if existing_client.budget:
+            client_summary.append(f"Бюджет: {existing_client.budget}")
+        if existing_client.size:
+            client_summary.append(f"Площадь: {existing_client.size}")
+        if existing_client.location:
+            client_summary.append(f"Район: {existing_client.location}")
+        if existing_client.rooms:
+            client_summary.append(f"Комнаты: {existing_client.rooms}")
+        if existing_client.ready_status:
+            client_summary.append(f"Стадия: {existing_client.ready_status}")
+        if existing_client.notes:
+            client_summary.append(f"Пожелания: {existing_client.notes}")
+        
+        if client_summary:
+            context.user_data["conversation"].append({
+                "role": "user", 
+                "content": f"Я ищу квартиру. {', '.join(client_summary)}"
+            })
     else:
         context.user_data["client_info"] = {
             "telegram_id": user.id,

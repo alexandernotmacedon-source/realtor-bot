@@ -58,6 +58,62 @@ from bot.drive_handlers import search_followup_handler
 logger = logging.getLogger(__name__)
 
 
+async def _restore_client_from_database(context: ContextTypes.DEFAULT_TYPE, repo, telegram_id: int) -> bool:
+    """Restore client data from database into context.user_data.
+    
+    Returns True if client was found and restored, False otherwise.
+    """
+    existing_client = await repo.get_client_by_telegram_global(telegram_id)
+    if not existing_client:
+        return False
+    
+    # Restore client info from database
+    context.user_data["client_info"] = {
+        "telegram_id": existing_client.telegram_id,
+        "telegram_username": existing_client.telegram_username,
+        "name": existing_client.name,
+        "realtor_id": existing_client.realtor_id,
+        "budget": existing_client.budget,
+        "size": existing_client.size,
+        "location": existing_client.location,
+        "rooms": existing_client.rooms,
+        "ready_status": existing_client.ready_status,
+        "notes": existing_client.notes,
+        "contact": existing_client.contact,
+    }
+    
+    # Reconstruct conversation history
+    realtor = await repo.get_realtor(existing_client.realtor_id)
+    realtor_name = realtor.full_name if realtor else "Риелтор"
+    context.user_data["conversation"] = [
+        {"role": "system", "content": f"Риелтор: {realtor_name}"}
+    ]
+    
+    # Add client criteria to conversation so LLM knows what was discussed
+    client_summary = []
+    if existing_client.budget:
+        client_summary.append(f"Бюджет: {existing_client.budget}")
+    if existing_client.size:
+        client_summary.append(f"Площадь: {existing_client.size}")
+    if existing_client.location:
+        client_summary.append(f"Район: {existing_client.location}")
+    if existing_client.rooms:
+        client_summary.append(f"Комнаты: {existing_client.rooms}")
+    if existing_client.ready_status:
+        client_summary.append(f"Стадия: {existing_client.ready_status}")
+    if existing_client.notes:
+        client_summary.append(f"Пожелания: {existing_client.notes}")
+    
+    if client_summary:
+        context.user_data["conversation"].append({
+            "role": "user", 
+            "content": f"Я ищу квартиру. {', '.join(client_summary)}"
+        })
+    
+    logger.info(f"Restored client {telegram_id} from database after restart")
+    return True
+
+
 async def handle_client_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle client text message - wrapper that checks client_info."""
     # Skip if not a client message (will be handled by other handlers)
@@ -73,27 +129,7 @@ async def handle_client_message(update: Update, context: ContextTypes.DEFAULT_TY
     # Check if client has active conversation in memory
     if "client_info" not in context.user_data:
         # Try to load from database (client might exist from previous session)
-        existing_client = await repo.get_client_by_telegram_global(update.effective_user.id)
-        if existing_client:
-            # Restore client info from database
-            context.user_data["client_info"] = {
-                "telegram_id": existing_client.telegram_id,
-                "telegram_username": existing_client.telegram_username,
-                "name": existing_client.name,
-                "realtor_id": existing_client.realtor_id,
-                "budget": existing_client.budget,
-                "size": existing_client.size,
-                "location": existing_client.location,
-                "rooms": existing_client.rooms,
-                "ready_status": existing_client.ready_status,
-                "notes": existing_client.notes,
-                "contact": existing_client.contact,
-            }
-            context.user_data["conversation"] = [
-                {"role": "system", "content": f"Риелтор ID: {existing_client.realtor_id}"}
-            ]
-            logger.info(f"Restored client {update.effective_user.id} from database after restart")
-        else:
+        if not await _restore_client_from_database(context, repo, update.effective_user.id):
             # Not in conversation - prompt to start
             await update.effective_message.reply_text(
                 "👋 Привет! Чтобы начать подбор недвижимости, отправьте /start"
@@ -119,27 +155,7 @@ async def handle_client_voice_message(update: Update, context: ContextTypes.DEFA
     # Check if client has active conversation in memory
     if "client_info" not in context.user_data:
         # Try to load from database (client might exist from previous session)
-        existing_client = await repo.get_client_by_telegram_global(update.effective_user.id)
-        if existing_client:
-            # Restore client info from database
-            context.user_data["client_info"] = {
-                "telegram_id": existing_client.telegram_id,
-                "telegram_username": existing_client.telegram_username,
-                "name": existing_client.name,
-                "realtor_id": existing_client.realtor_id,
-                "budget": existing_client.budget,
-                "size": existing_client.size,
-                "location": existing_client.location,
-                "rooms": existing_client.rooms,
-                "ready_status": existing_client.ready_status,
-                "notes": existing_client.notes,
-                "contact": existing_client.contact,
-            }
-            context.user_data["conversation"] = [
-                {"role": "system", "content": f"Риелтор ID: {existing_client.realtor_id}"}
-            ]
-            logger.info(f"Restored client {update.effective_user.id} from database after restart")
-        else:
+        if not await _restore_client_from_database(context, repo, update.effective_user.id):
             if update.effective_message:
                 await update.effective_message.reply_text(
                     "🎙 Получил голосовое сообщение!\n\n"
