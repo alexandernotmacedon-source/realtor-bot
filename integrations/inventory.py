@@ -361,8 +361,22 @@ class InventoryMatcher:
                         )
                     )
 
+        # Sort by score descending
         results.sort(key=lambda m: m.score, reverse=True)
-        return results[offset:offset + max_results]
+        
+        # Apply diversity: max 2 per developer, round-robin selection
+        developer_counts = {}
+        diverse_results = []
+        
+        for match in results:
+            dev = match.developer
+            if developer_counts.get(dev, 0) < 2:  # Max 2 per developer
+                diverse_results.append(match)
+                developer_counts[dev] = developer_counts.get(dev, 0) + 1
+            if len(diverse_results) >= offset + max_results:
+                break
+        
+        return diverse_results[offset:offset + max_results]
 
     def _parse_budget_range(self, budget_text: Optional[str]) -> Tuple[Optional[float], Optional[float]]:
         if not budget_text:
