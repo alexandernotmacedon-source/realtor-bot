@@ -406,12 +406,23 @@ async def _handle_apartment_selection(
 
     sanitized = sanitize_user_text(text, max_len=500).lower()
 
+    # Check if client wants more options
+    if any(word in sanitized for word in ['ещё', 'еще', 'следующие', 'дальше', 'больше']):
+        await update.effective_message.reply_text(
+            "🔍 Ищу дополнительные варианты..."
+        )
+        # TODO: Show next 5 apartments with offset
+        await update.effective_message.reply_text(
+            "(Функция «ещё варианты» в разработке — пока можно уточнить критерии для нового поиска)"
+        )
+        context.user_data.pop("awaiting_apartment_selection", None)
+        return 8
+
     # Check if client said nothing fits
     negative_responses = ['не', 'ничего', 'не подошло', 'не нравится', 'другое', 'другой', 'нет']
     if any(neg in sanitized for neg in negative_responses) or 'подошло' in sanitized:
         await update.effective_message.reply_text(
-            "Поняла! Давайте уточним критерии — что именно не устроило? "
-            "Или может посмотрим варианты в другом районе/бюджете? 🏠"
+            "Поняла! Давайте уточним критерии — что именно не устроило?"
         )
         # Clear selection flag but keep conversation open
         context.user_data.pop("awaiting_apartment_selection", None)
