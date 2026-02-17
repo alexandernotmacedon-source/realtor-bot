@@ -585,35 +585,80 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         )
         return ConversationHandler.END
 
-    # Realtor registration in progress is handled by realtor conversation
-
-    # Try to get realtor from referral code first, then fallback to default
+    # Get target realtor from referral code or default
     referral_realtor_id = _parse_referral_code(context)
     if referral_realtor_id:
-        realtor = await _get_realtor_by_id(referral_realtor_id)
-        if not realtor:
-            # Referral code invalid, fallback to default
-            realtor = await _get_default_realtor()
+        target_realtor = await _get_realtor_by_id(referral_realtor_id)
+        if not target_realtor:
+            target_realtor = await _get_default_realtor()
     else:
-        realtor = await _get_default_realtor()
+        target_realtor = await _get_default_realtor()
     
-    if not realtor:
+    if not target_realtor:
         await update.effective_message.reply_text(
             "⚠️ Пока нет доступных риелторов.\n"
             "Если вы риелтор, отправьте /register"
         )
         return ConversationHandler.END
 
-    # Check for existing client — allow new conversation
+    # Check if client already exists with ANY realtor
     repo = Container.get_repository()
-    existing = await repo.get_client_by_telegram(user.id, realtor.id)
-    is_returning = existing is not None
+    existing_client = await repo.get_client_by_telegram_global(user.id)
+    
+    if existing_client:
+        # Client exists with another realtor
+        existing_realtor = await repo.get_realtor(existing_client.realtor_id)
+        
+        if existing_realtor and existing_realtor.id != target_realtor.id:
+            # Different realtor - show warning with choice
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        f"📞 Связаться с {existing_realtor.full_name}",
+                        callback_data=f"choose_existing_realtor:{existing_realtor.id}"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        f"🆕 Начать с {target_realtor.full_name}",
+                        callback_data=f"choose_new_realtor:{target_realtor.id}"
+                    )
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            warning_text = (
+                f"⚠️ <b>Внимание!</b>\n\n"
+                f"Вы уже работаете с риелтором <b>{existing_realtor.full_name}</b>.\n\n"
+                f"С кем хотите продолжить общение?"
+            )
+            
+            # Store both realtors in context for later
+            context.user_data["existing_realtor_id"] = existing_realtor.id
+            context.user_data["new_realtor_id"] = target_realtor.id
+            context.user_data["pending_realtor_choice"] = True
+            
+            await update.effective_message.reply_text(
+                warning_text,
+                reply_markup=reply_markup,
+                parse_mode="HTML"
+            )
+            return 8  # Wait for user choice
+        
+        elif existing_realtor and existing_realtor.id == target_realtor.id:
+            # Same realtor - returning client
+            is_returning = True
+        else:
+            is_returning = False
+    else:
+        is_returning = False
 
+    # Setup client info with chosen realtor
     context.user_data["client_info"] = {
         "telegram_id": user.id,
         "telegram_username": user.username,
         "name": user.full_name,
-        "realtor_id": realtor.id,
+        "realtor_id": target_realtor.id,
     }
     context.user_data["conversation"] = []
 
@@ -621,12 +666,12 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     if is_returning:
         welcome_text = f"👋 С возвращением! Рада снова помочь с подбором недвижимости.\n\nДавайте уточним критерии — на какую сумму сейчас рассматриваете покупку? 💫"
     else:
-        welcome_text = f"Здравствуйте! Меня зовут {realtor.full_name}, я риелтор по недвижимости в Батуми. Рада помочь с подбором квартиры! 💫\n\nДавайте начнём с бюджета — на какую сумму вы рассматриваете покупку?"
+        welcome_text = f"Здравствуйте! Меня зовут {target_realtor.full_name}, я риелтор по недвижимости в Батуми. Рада помочь с подбором квартиры! 💫\n\nДавайте начнём с бюджета — на какую сумму вы рассматриваете покупку?"
     await update.effective_message.reply_text(welcome_text)
     
     # Initialize conversation history for LLM
     context.user_data["conversation"] = [
-        {"role": "system", "content": f"Риелтор: {realtor.full_name}"},
+        {"role": "system", "content": f"Риелтор: {target_realtor.full_name}"},
         {"role": "assistant", "content": welcome_text}
     ]
 

@@ -320,6 +320,28 @@ class JSONRepository(BaseRepository):
                 return client
         
         return None
+
+    async def get_client_by_telegram_global(
+        self,
+        telegram_id: int
+    ) -> Optional[ClientModel]:
+        """Get client by Telegram ID across all realtors.
+        
+        Args:
+            telegram_id: Client's Telegram ID
+            
+        Returns:
+            Client model or None if not found
+        """
+        all_realtors = await self.get_all_realtors()
+        
+        for realtor in all_realtors:
+            clients = await self.get_clients_by_realtor(realtor.id)
+            for client in clients:
+                if client.telegram_id == telegram_id:
+                    return client
+        
+        return None
     
     async def delete_client(self, client_id: int) -> bool:
         """

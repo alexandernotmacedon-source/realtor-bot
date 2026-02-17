@@ -385,7 +385,69 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     repo = Container.get_repository()
 
-    # View client
+    # Handle realtor choice for existing clients (available to all users)
+    if data.startswith("choose_existing_realtor:"):
+        realtor_id = int(data.split(":", 1)[1])
+        realtor = await repo.get_realtor(realtor_id)
+        
+        if not realtor:
+            await query.edit_message_text("❌ Риелтор не найден.")
+            return
+        
+        # Continue with existing realtor
+        context.user_data["client_info"] = {
+            "telegram_id": user.id,
+            "telegram_username": user.username,
+            "name": user.full_name,
+            "realtor_id": realtor.id,
+        }
+        context.user_data["conversation"] = []
+        context.user_data["pending_realtor_choice"] = False
+        
+        welcome_text = f"👋 С возвращением! Рада снова помочь с подбором недвижимости.\n\nДавайте уточним критерии — на какую сумму сейчас рассматриваете покупку? 💫"
+        
+        await query.edit_message_text(welcome_text)
+        
+        context.user_data["conversation"] = [
+            {"role": "system", "content": f"Риелтор: {realtor.full_name}"},
+            {"role": "assistant", "content": welcome_text}
+        ]
+        return
+    
+    if data.startswith("choose_new_realtor:"):
+        new_realtor_id = int(data.split(":", 1)[1])
+        new_realtor = await repo.get_realtor(new_realtor_id)
+        
+        if not new_realtor:
+            await query.edit_message_text("❌ Риелтор не найден.")
+            return
+        
+        # Check if client exists with old realtor and delete old record
+        existing_client = await repo.get_client_by_telegram_global(user.id)
+        if existing_client:
+            await repo.delete_client(existing_client.id)
+        
+        # Continue with new realtor
+        context.user_data["client_info"] = {
+            "telegram_id": user.id,
+            "telegram_username": user.username,
+            "name": user.full_name,
+            "realtor_id": new_realtor.id,
+        }
+        context.user_data["conversation"] = []
+        context.user_data["pending_realtor_choice"] = False
+        
+        welcome_text = f"Здравствуйте! Меня зовут {new_realtor.full_name}, я риелтор по недвижимости в Батуми. Рада помочь с подбором квартиры! 💫\n\nДавайте начнём с бюджета — на какую сумму вы рассматриваете покупку?"
+        
+        await query.edit_message_text(welcome_text)
+        
+        context.user_data["conversation"] = [
+            {"role": "system", "content": f"Риелтор: {new_realtor.full_name}"},
+            {"role": "assistant", "content": welcome_text}
+        ]
+        return
+
+    # View client (realtor only)
     if data.startswith("client:"):
         client_id = int(data.split(":", 1)[1])
         client = await repo.get_client(client_id)

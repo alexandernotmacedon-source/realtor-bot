@@ -60,6 +60,14 @@ class BaseRepository(ABC):
     ) -> Optional[ClientModel]:
         """Get client by Telegram ID and realtor ID."""
         pass
+
+    @abstractmethod
+    async def get_client_by_telegram_global(
+        self,
+        telegram_id: int
+    ) -> Optional[ClientModel]:
+        """Get client by Telegram ID across all realtors."""
+        pass
     
     @abstractmethod
     async def delete_client(self, client_id: int) -> bool:
