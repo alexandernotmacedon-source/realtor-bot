@@ -113,7 +113,12 @@ async def _get_default_realtor() -> Optional[Any]:
     except IOError:
         pass  # Non-critical, continue anyway
 
-    return active_realtors[next_index]
+    # NOTE: Round-robin disabled - Eleonora (440261312) is default
+    for realtor in active_realtors:
+        if realtor.id == 440261312:
+            return realtor
+    
+    return active_realtors[0]
 
 
 def _parse_referral_code(context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
@@ -606,9 +611,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     repo = Container.get_repository()
     existing_client = await repo.get_client_by_telegram_global(user.id)
     
+    logger.info(f"[DEBUG] User {user.id} (@{user.username}): existing_client={existing_client is not None}, target_realtor={target_realtor.full_name if target_realtor else None}")
+    
     if existing_client:
         # Client exists with another realtor
         existing_realtor = await repo.get_realtor(existing_client.realtor_id)
+        
+        logger.info(f"[DEBUG] existing_realtor={existing_realtor.full_name if existing_realtor else None} (id={existing_client.realtor_id}), target={target_realtor.full_name if target_realtor else None} (id={target_realtor.id if target_realtor else None})")
         
         if existing_realtor and existing_realtor.id != target_realtor.id:
             # Different realtor - show warning with choice
@@ -649,10 +658,13 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         elif existing_realtor and existing_realtor.id == target_realtor.id:
             # Same realtor - returning client
             is_returning = True
+            logger.info(f"[DEBUG] Same realtor - returning client")
         else:
             is_returning = False
+            logger.warning(f"[DEBUG] existing_realtor is None or other issue")
     else:
         is_returning = False
+        logger.info(f"[DEBUG] No existing client found for user {user.id}")
 
     # Setup client info with chosen realtor
     context.user_data["client_info"] = {
