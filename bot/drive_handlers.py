@@ -220,9 +220,22 @@ async def search_inventory_command(update: Update, context: ContextTypes.DEFAULT
         )
         return
 
+    # Save search context for "show more" functionality
+    context.user_data["last_search"] = {
+        "params": params,
+        "shown_count": len(matches),
+        "total_matches": len(matches),  # Will be updated if we fetch more
+    }
+
     text = [f"✅ Найдено {len(matches)} вариантов:\n"]
     for m in matches:
         text.append(matcher.format_match(m))
+    
+    text.append(
+        "💡 Хотите посмотреть планировки понравившихся квартир? "
+        "Напишите номера квартир (например: 205, 207).\n\n"
+        "Или напишите «ещё» чтобы увидеть следующие варианты."
+    )
 
     await msg.reply_text("\n".join(text))
 
@@ -257,3 +270,98 @@ async def folders_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     lines.append("\nДля добавления новых папок обратитесь к администратору.")
     await msg.reply_text("\n".join(lines))
+
+
+@with_middleware
+async def search_followup_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle follow-up messages after search (layout requests or more results)."""
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or not msg or not msg.text:
+        return
+
+    if not await _is_realtor(user.id):
+        return  # Let other handlers process
+
+    text = msg.text.lower().strip()
+
+    # Check if user wants more results
+    if text in ("ещё", "еще", "еще варианты", "ещё варианты", "дальше", "следующие"):
+        await _handle_show_more(update, context)
+        return
+
+    # Check if user is requesting layouts (contains apartment numbers)
+    # Pattern: numbers like "205", "205, 207", "апт 205", "кв 205"
+    import re
+    apt_numbers = re.findall(r'(?:апт|кв|квартира)?\s*(\d+)', text)
+    if apt_numbers and len(apt_numbers) <= 5:  # Reasonable number of apartments
+        await _handle_layout_request(update, context, apt_numbers)
+        return
+
+    # Not a follow-up message, let other handlers process
+    return
+
+
+async def _handle_show_more(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show next 5 matching apartments."""
+    msg = update.effective_message
+    last_search = context.user_data.get("last_search")
+
+    if not last_search:
+        await msg.reply_text(
+            "❓ Нет предыдущего поиска.\n\n"
+            "Используйте /search чтобы найти квартиры."
+        )
+        return
+
+    await msg.reply_text("🔍 Ищу ещё варианты...")
+
+    params = last_search["params"]
+    shown = last_search["shown_count"]
+
+    matcher = Container.get_inventory_matcher()
+
+    # Get more results with offset
+    matches = await asyncio.to_thread(
+        matcher.match_apartments,
+        params.get("бюджет") or params.get("budget"),
+        params.get("площадь") or params.get("size"),
+        params.get("локация") or params.get("location"),
+        params.get("комнаты") or params.get("rooms"),
+        params.get("стадия") or params.get("ready_status"),
+        shown + 5,  # Get more to skip already shown
+    )
+
+    if len(matches) <= shown:
+        await msg.reply_text(
+            "😕 Больше подходящих вариантов нет.\n\n"
+            "Попробуйте изменить параметры поиска: /search"
+        )
+        return
+
+    # Show next 5
+    new_matches = matches[shown:shown + 5]
+    context.user_data["last_search"]["shown_count"] = shown + len(new_matches)
+
+    text = [f"✅ Ещё {len(new_matches)} вариантов:\n"]
+    for m in new_matches:
+        text.append(matcher.format_match(m))
+
+    text.append(
+        "💡 Напишите номера квартир для планировок, или «ещё» для следующих вариантов."
+    )
+
+    await msg.reply_text("\n".join(text))
+
+
+async def _handle_layout_request(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, apt_numbers: list
+) -> None:
+    """Handle request for apartment layouts."""
+    msg = update.effective_message
+
+    await msg.reply_text(
+        f"📐 Ищу планировки для квартир: {', '.join(apt_numbers)}...\n\n"
+        "(Функция в разработке — скоро будет!)"
+    )
+    # TODO: Search for layout files in Google Drive subfolders

@@ -5,13 +5,16 @@ Contains:
 - Clients management (/clients, /client, /stats)
 - Export placeholder (/export)
 - Inline buttons callbacks (client card, status updates)
+- Developer names management (/developers)
 
 All handlers are async.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Optional
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -211,6 +214,49 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 @with_middleware
+async def link_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Generate referral link for realtor."""
+
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or not msg:
+        return
+
+    if not await _is_realtor(user.id):
+        await msg.reply_text("⚠️ Только для риелторов.")
+        return
+
+    repo = Container.get_repository()
+    realtor = await repo.get_realtor(user.id)
+    
+    if not realtor:
+        await msg.reply_text("❌ Ошибка: риелтор не найден.")
+        return
+
+    # Get bot info for username
+    try:
+        bot_info = await context.bot.get_me()
+        bot_username = bot_info.username
+    except Exception:
+        bot_username = "Property_Batumi_bot"  # Fallback
+
+    # Generate referral link
+    referral_link = f"https://t.me/{bot_username}?start=ref_{user.id}"
+
+    msg_text = (
+        "🔗 <b>Ваша реферальная ссылка</b>\n\n"
+        f"{referral_link}\n\n"
+        "📲 <b>Как использовать:</b>\n"
+        "1. Отправьте эту ссылку клиенту\n"
+        "2. Клиент нажимает и открывает бота\n"
+        "3. Клиент автоматически закрепляется за вами!\n\n"
+        f"💡 <b>Совет:</b> Добавьте ссылку в Instagram, визитку или отправьте в личных сообщениях."
+    )
+
+    await msg.reply_text(msg_text, parse_mode="HTML")
+
+
+@with_middleware
 async def client_detail_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show client details: /client <id>."""
 
@@ -361,13 +407,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         if client.notes:
             text += f"\n📝 {client.notes}"
 
-        keyboard = [
-            [InlineKeyboardButton("📞 Позвонить", url=f"tel:{client.contact}")],
-            [
-                InlineKeyboardButton("✅ Закрыть", callback_data=f"status:{client.id}:{ClientStatus.CLOSED.value}"),
-                InlineKeyboardButton("❌ Отказ", callback_data=f"status:{client.id}:{ClientStatus.REJECTED.value}"),
-            ],
-        ]
+        keyboard = []
+        
+        # Add Telegram message button if username exists
+        if client.telegram_username:
+            keyboard.append([InlineKeyboardButton("💬 Написать в Telegram", url=f"https://t.me/{client.telegram_username}")])
+        
+        # Only add call button if contact looks like a phone number
+        if client.contact and client.contact.startswith("+"):
+            keyboard.append([InlineKeyboardButton("📞 Позвонить", url=f"tel:{client.contact}")])
+        
+        keyboard.append([
+            InlineKeyboardButton("✅ Закрыть", callback_data=f"status:{client.id}:{ClientStatus.CLOSED.value}"),
+            InlineKeyboardButton("❌ Отказ", callback_data=f"status:{client.id}:{ClientStatus.REJECTED.value}"),
+        ])
 
         await query.edit_message_text(
             text,
@@ -411,3 +464,103 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             parse_mode="HTML",
         )
         return
+
+
+@with_middleware
+async def developers_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show and manage developer names and addresses mapping."""
+    if not update.effective_user or not update.effective_message:
+        return
+
+    user = update.effective_user
+    if not await _is_realtor(user.id):
+        await update.effective_message.reply_text(
+            "❌ Эта команда только для риелторов."
+        )
+        return
+
+    # Load current mappings
+    names_path = Path("./data/developer_names.json")
+    addresses_path = Path("./data/developer_addresses.json")
+
+    if names_path.exists():
+        with open(names_path, 'r', encoding='utf-8') as f:
+            names_mapping = json.load(f)
+    else:
+        names_mapping = {}
+
+    if addresses_path.exists():
+        with open(addresses_path, 'r', encoding='utf-8') as f:
+            addresses_mapping = json.load(f)
+    else:
+        addresses_mapping = {}
+
+    # Check for subcommand: /developers address folder_3 "ул. Пушкина 10"
+    if context.args and len(context.args) >= 1:
+        if context.args[0].lower() == 'address' and len(context.args) >= 3:
+            # Format: /developers address folder_3 "ул. Пушкина 10"
+            folder_key = context.args[1]
+            address = ' '.join(context.args[2:]).strip('"\'')
+
+            if folder_key.startswith('folder_'):
+                addresses_mapping[folder_key] = address
+                with open(addresses_path, 'w', encoding='utf-8') as f:
+                    json.dump(addresses_mapping, f, indent=2, ensure_ascii=False)
+                await update.effective_message.reply_text(
+                    f"✅ Адрес обновлён: <b>{folder_key}</b>\n"
+                    f"📍 {address}\n\n"
+                    f"Изменения применятся сразу!",
+                    parse_mode="HTML"
+                )
+                return
+            else:
+                await update.effective_message.reply_text(
+                    "❌ Неверный формат ключа. Используйте: folder_1, folder_2, etc."
+                )
+                return
+
+        elif context.args[0].startswith('folder_') and len(context.args) >= 2:
+            # Format: /developers folder_3 "Next Magnolia"
+            folder_key = context.args[0]
+            display_name = ' '.join(context.args[1:]).strip('"\'')
+
+            names_mapping[folder_key] = display_name
+            with open(names_path, 'w', encoding='utf-8') as f:
+                json.dump(names_mapping, f, indent=2, ensure_ascii=False)
+            await update.effective_message.reply_text(
+                f"✅ Название обновлено: <b>{folder_key}</b> → <b>{display_name}</b>\n\n"
+                f"Изменения применятся сразу!",
+                parse_mode="HTML"
+            )
+            return
+
+        else:
+            await update.effective_message.reply_text(
+                "❌ Неверный формат.\n\n"
+                "<b>Название:</b> <code>/developers folder_3 Next Magnolia</code>\n"
+                "<b>Адрес:</b> <code>/developers address folder_3 \"ул. Пушкина 10\"</code>"
+            )
+            return
+
+    # Show current mapping
+    lines = ["🏗 <b>Застройщики</b> (название + адрес)\n"]
+
+    for key in sorted(names_mapping.keys()):
+        if key.startswith('_'):
+            continue
+        name = names_mapping[key]
+        address = addresses_mapping.get(key, '')
+        if address:
+            lines.append(f"<code>{key}</code> → <b>{name}</b>\n   📍 {address}")
+        else:
+            lines.append(f"<code>{key}</code> → <b>{name}</b>")
+
+    lines.append("\n<b>Как обновить:</b>")
+    lines.append("<code>/developers folder_3 Next Magnolia</code>")
+    lines.append("<code>/developers address folder_3 \"ул. Пушкина 10\"</code>")
+    lines.append("\nИзменения применяются сразу — без перезапуска бота!")
+
+    await update.effective_message.reply_text(
+        '\n'.join(lines),
+        parse_mode="HTML"
+    )

@@ -1,125 +1,234 @@
-# Realtor Bot Architecture (Refactor)
+# Realtor Bot - Архитектура данных
 
-## Goals
-
-- Keep **user-facing behavior** intact (same Telegram commands and flows).
-- Improve maintainability: split large modules, introduce clear layers.
-- Improve safety: input validation/sanitization, rate limiting, better error handling.
-- Improve performance: caching (TTL), lazy loading, avoid repeated heavy operations.
-- Prepare for future growth: switchable DB backend, switchable LLM provider.
-
-## High-Level Structure
+## Общая схема
 
 ```
-realtor-bot/
-  main.py
-  bot/
-    config.py
-    handlers.py               # facade (re-exports)
-    client_handlers.py        # client flows (/start, dialog, voice)
-    realtor_handlers.py       # realtor flows (/register, /clients, callbacks)
-    drive_handlers.py         # /drive_setup, /inventory, /search, /folders
-    llm_handler.py            # backward-compatible wrapper
-  core/
-    container.py              # Dependency Injection factory (lazy singletons)
-    llm_service.py            # LLM provider abstraction + fallback
-    middleware.py             # logging / errors / rate limiting
-  database/
-    models.py                 # Pydantic models (validation + sanitization)
-    repository.py             # Repository interface
-    json_repository.py        # JSON backend (MVP, backward compatible)
-    db.py                     # legacy facade
-  integrations/
-    google_drive.py           # Drive manager (retry + caching)
-    inventory.py              # inventory matcher (TTL cache)
-    google_sheets.py          # optional CRM integration
-  utils/
-    helpers.py                # sanitization + small helpers
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        ИСТОЧНИКИ ДАННЫХ                                │
+├─────────────────┬─────────────────┬─────────────────┬───────────────────┤
+│ Sofia's Drive   │ Property Finder │  MyHome.ge      │  Прямая связь    │
+│ (29 папок)      │ (скрапер)       │  (будущее)      │  с девелоперами  │
+└────────┬────────┴────────┬────────┴────────┬────────┴─────────┬─────────┘
+         │                 │                 │                  │
+         └─────────────────┴─────────────────┴──────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     ОБРАБОТКА И ХРАНЕНИЕ                               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  Google Sheets API          │  Локальные файлы       │  Notion CRM     │
+│  ├── Клиенты (лиды)         │  ├── data/drafts/      │  ├── Архитектура│
+│  ├── История поиска         │  ├── data/sessions/    │  ├── Документация│
+│  └── Статистика             │  └── data/logs/        │  └── Roadmap    │
+└─────────────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     TELEGRAM BOT (@Property_Batumi_Bot)                │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐ │
+│  │  AI Chat     │  │  Поиск       │  │  Форма       │  │  Admin      │ │
+│  │  (Kimi/Groq) │  │  квартир     │  │  клиента     │  │  панель     │ │
+│  └──────────────┘  └──────────────┘  └──────────────┘  └─────────────┘ │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Execution Flow
+## 1. Источники данных по квартирам
 
-### main.py
-- Loads settings from `.env` via `bot.config.settings` (pydantic-settings).
-- Builds `python-telegram-bot` `Application`.
-- Registers:
-  - `ConversationHandler` for realtor registration (`/register` → phone → company)
-  - `ConversationHandler` for client LLM dialog (`/start` → message/voice)
-  - Command handlers (`/clients`, `/stats`, `/drive_setup`, etc.)
-  - Callback handler for inline buttons
-  - Low-priority text handler for Drive OAuth code input
+### 1.1 Sofia's Google Drive (основной)
+**Статус:** Настроен, ждёт авторизации Google Drive API
 
-### Dependency Injection
-- `core.container.Container` is the single place where services are created.
-- Services are **lazy-loaded** and cached:
-  - Repository (`JSONRepository` by default)
-  - LLM Service (`LLMService`) with fallback chain
-  - Google Drive manager (`GoogleDriveManager`) with TTL caching
-  - Inventory matcher (`InventoryMatcher`) with TTL caching
+**Что там:**
+- 29 папок девелоперов (Batumi Hills, Next White, и т.д.)
+- 7 веб-сайтов с каталогами
+- 3 Google Sheets с инвентарём
 
-## Key Best Practices Applied
+**Локальная копия:** `realtor-bot/data/developer_links.json`
 
-### 1) Validation & Security
-- Data models moved to **Pydantic** (`database/models.py`).
-- User input is sanitized via `utils.helpers.sanitize_user_text`.
-- Rate limiting via `core.middleware.RateLimiter` decorator.
+**Интеграция:**
+```python
+# Google Drive API → парсинг PDF/Excel → база квартир
+# Требуется: credentials.json + OAuth авторизация
+```
 
-### 2) Error Handling & Logging
-- Per-handler middleware wrappers: logging + rate limiting + error handling.
-- Global PTB error handler in `main.py`.
+### 1.2 Property Finder (скрапер)
+**Статус:** Работает, но нужен рефакторинг
 
-### 3) Performance
-- Inventory loading uses TTL caching:
-  - Drive scans are cached (`cachetools.TTLCache`).
-  - Inventory data is cached with TTL in `InventoryMatcher`.
-- Heavy sync operations (Google API / pandas) should be called via `asyncio.to_thread`.
+**Как работает:**
+- Сканирует propertyfinder.ge по фильтрам
+- Сохраняет новые объявления
+- Отправляет уведомления
 
-### 4) DB Layer (Repository Pattern)
-- `database/repository.py` defines the interface.
-- `database/json_repository.py` implements the MVP backend and keeps the JSON schema:
-  ```json
-  {
-    "realtors": {"<id>": {...}},
-    "clients": {"<id>": {...}},
-    "client_counter": 123
-  }
-  ```
-- This makes migration to SQL easy: add `SQLRepository` implementing the same interface.
+**Проблема:** Сайт обновился, скрапер падает на некоторых страницах
 
-### 5) LLM Provider Abstraction
-- `core/llm_service.py` provides:
-  - provider base interface
-  - OpenAI provider
-  - Anthropic provider
-  - fallback chain (tries next provider on errors)
-  - optional streaming interface
+### 1.3 MyHome.ge (планируется)
+**Статус:** В очереди на разработку
 
-## How to Extend
+---
 
-### Add a New Command
-1. Add handler function to the appropriate module:
-   - `client_handlers.py` (client)
-   - `realtor_handlers.py` (realtor)
-   - `drive_handlers.py` (drive/inventory)
-2. Wrap it with `@with_middleware`.
-3. Register it in `main.py` via `CommandHandler`.
+## 2. Хранение клиентских данных
 
-### Add a New DB Backend (PostgreSQL)
-1. Create `database/sql_repository.py` implementing `BaseRepository`.
-2. Set in `.env`:
-   - `DATABASE_BACKEND=postgresql`
-   - `DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname`
-3. Update `core/container.py` to import and instantiate the SQL repository.
+### 2.1 Активные разговоры (Автосейв)
+**Где:** `realtor-bot/data/drafts/<chat_id>.json`
 
-### Add a New LLM Provider
-1. Create a new provider class implementing `LLMProviderBase`.
-2. Add enum value to `LLMProvider`.
-3. Extend `LLMService._setup_provider`.
-4. Configure `.env` to select provider and API key.
+**Что хранится:**
+```json
+{
+  "chat_id": 123456789,
+  "status": "DRAFT", // DRАFT → NEW → CONTACTED → CLOSED
+  "created_at": "2026-02-17T10:00:00",
+  "updated_at": "2026-02-17T10:30:00",
+  "client_info": {
+    "name": "Иван",
+    "budget": "до $150k",
+    "rooms": "2-3",
+    "district": "Батуми центр",
+    "deadline": "июнь 2026"
+  },
+  "messages": [...],
+  "notes": "..."
+}
+```
 
-## Operational Notes (VPS, 24/7)
-- Keep `.env` with required keys:
-  - `TELEGRAM_BOT_TOKEN`
-  - `OPENAI_API_KEY` (or set `LLM_PROVIDER=anthropic` + `ANTHROPIC_API_KEY`)
-- Google Drive OAuth requires `credentials.json` and will store token in `token.pickle`.
+**Фича:** Автосохранение после КАЖДОГО ответа клиента. Данные не теряются даже при перезапуске бота.
 
+### 2.2 Google Sheets (основная база)
+**Где:** Google Drive → Realtor Bot → Clients Database
+
+**Структура:**
+| ID | Дата | Имя | Телефон | Бюджет | Комнаты | Район | Статус | Источник | История |
+|----|------|-----|---------|--------|---------|-------|--------|----------|---------|
+| 1 | 17.02 | Иван | +7912... | $150k | 2-3 | Центр | NEW | Bot | [ссылка] |
+
+**Статусы:**
+- `DRAFT` — разговор в процессе
+- `NEW` — форма заполнена, ждёт обработки
+- `CONTACTED` — риелтор связался
+- `VIEWING` — назначен показ
+- `OFFER` — сделано предложение
+- `CLOSED` — сделка завершена
+- `LOST` — клиент отвалился
+
+### 2.3 История сообщений
+**Где:** `realtor-bot/data/sessions/<chat_id>/<date>.jsonl`
+
+**Что хранится:** Полный лог переписки для анализа и обучения AI.
+
+---
+
+## 3. Технический стек
+
+### 3.1 Компоненты
+```
+┌────────────────────────────────────────┐
+│  Hostinger VPS (Docker)               │
+│  ┌──────────────────────────────────┐  │
+│  │  realtor-bot (Python)            │  │
+│  │  ├── python-telegram-bot         │  │
+│  │  ├── openai/moonshot API         │  │
+│  │  ├── google-api-python-client    │  │
+│  │  └── aiohttp (async)             │  │
+│  └──────────────────────────────────┘  │
+│  ┌──────────────────────────────────┐  │
+│  │  property-finder-monitor (Python)│  │
+│  │  └── playwright + beautifulsoup  │  │
+│  └──────────────────────────────────┘  │
+│  ┌──────────────────────────────────┐  │
+│  │  PostgreSQL (опционально)        │  │
+│  │  └── для масштабирования         │  │
+│  └──────────────────────────────────┘  │
+└────────────────────────────────────────┘
+```
+
+### 3.2 API Keys / Токены
+| Сервис | Статус | Где |
+|--------|--------|-----|
+| Telegram Bot Token | ✅ Работает | `.env` |
+| Moonshot API | ✅ Работает | `.env` |
+| Groq API (Whisper) | ✅ Работает | `.env` |
+| Google Drive API | ⏳ Ждёт авторизации | нужен `credentials.json` |
+| Notion API | ⏳ Не настроен | нужен токен |
+
+---
+
+## 4. Поток данных (User Journey)
+
+```
+1. Пользователь пишет боту
+        ↓
+2. AI (Kimi) анализирует запрос
+        ↓
+3. Если клиент → запускает форму:
+   - Бюджет?
+   - Комнаты?
+   - Район?
+   - Сроки?
+        ↓
+4. Автосейв после каждого ответа
+        ↓
+5. После завершения формы:
+   - Статус DRАFT → NEW
+   - Отправка в Google Sheets
+   - Уведомление риелтору
+        ↓
+6. Риелтор забирает лид из таблицы
+   - Меняет статус на CONTACTED
+   - Работает с клиентом
+        ↓
+7. Результат записывается в таблицу
+```
+
+---
+
+## 5. Безопасность и бэкапы
+
+### 5.1 Автосейв (критично!)
+- Данные сохраняются после КАЖДОГО сообщения
+- Независимо от сбоев бота или сервера
+- Файлы в `data/drafts/` — JSON, читаемые человеком
+
+### 5.2 Резервное копирование
+- Git коммиты (все изменения в репозитории)
+- Google Sheets — облачное хранение
+- Локальные логи — ротация по 30 дней
+
+---
+
+## 6. Что нужно сделать (TODO)
+
+### Ближайшее (эта неделя)
+- [ ] Авторизовать Google Drive API (загрузить `credentials.json`)
+- [ ] Проверить работу импорта из папок Софии
+- [ ] Пофиксить Property Finder скрапер
+- [ ] Настроить Notion API для CRM
+
+### Среднесрочное (месяц)
+- [ ] Подключить MyHome.ge
+- [ ] Добавить фильтры поиска в боте
+- [ ] Интеграция с Google Calendar (показы)
+- [ ] Статистика и аналитика
+
+### Долгосрочное (квартал)
+- [ ] Мобильное приложение для риелторов
+- [ ] Автоматическая рассылка новых объектов
+- [ ] AI-рекомендации (похожие квартиры)
+
+---
+
+## 7. FAQ для команды
+
+**Q: Где посмотреть всех клиентов?**
+A: Google Sheets → Clients Database
+
+**Q: Что если бот упал во время разговора?**
+A: Данные сохранены в `data/drafts/`. После перезапуска бот продолжит с того же места.
+
+**Q: Откуда берутся квартиры в поиске?**
+A: Пока только вручную из Google Drive Софии. Автоматический парсинг в разработке.
+
+**Q: Как добавить нового девелопера?**
+A: Добавить папку в `developer_links.json` → перезапустить бот.
+
+---
+
+*Документ создан: 2026-02-17*
+*Последнее обновление: 2026-02-17*

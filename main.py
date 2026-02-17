@@ -33,8 +33,10 @@ from bot.handlers import (
     register_command,
     clients_command,
     stats_command,
+    link_command,
     client_detail_command,
     export_command,
+    developers_command,
     handle_realtor_phone,
     handle_realtor_company,
     handle_client_llm_message,
@@ -49,6 +51,7 @@ from bot.handlers import (
     STATE_REALTOR_COMPANY,
     STATE_CLIENT_COMPLETE,
 )
+from bot.drive_handlers import search_followup_handler
 
 
 logger = logging.getLogger(__name__)
@@ -118,7 +121,9 @@ def build_application() -> Application:
     application.add_handler(CommandHandler("clients", clients_command))
     application.add_handler(CommandHandler("client", client_detail_command))
     application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("link", link_command))
     application.add_handler(CommandHandler("export", export_command))
+    application.add_handler(CommandHandler("developers", developers_command))
 
     # Common commands
     application.add_handler(CommandHandler("help", help_command))
@@ -132,13 +137,43 @@ def build_application() -> Application:
     # Callback queries
     application.add_handler(CallbackQueryHandler(button_callback))
 
+    # Search follow-up handler (layout requests, "show more")
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, search_followup_handler),
+        group=0,
+    )
+
     # Drive auth code handler (lower priority than conversations)
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, drive_auth_code_handler),
         group=1,
     )
 
+    # Fallback handler for users not in conversation (prompt to /start)
+    application.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, _prompt_start_handler),
+        group=2,
+    )
+
     return application
+
+
+async def _prompt_start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Prompt user to send /start if they're not in a conversation."""
+    # Skip if user is in a conversation
+    if context.user_data.get("client_info"):
+        return
+    
+    # Skip if user is a realtor
+    from database.container import Container
+    repo = Container.get_repository()
+    if update.effective_user and await repo.get_realtor(update.effective_user.id):
+        return
+    
+    if update.effective_message:
+        await update.effective_message.reply_text(
+            "👋 Привет! Чтобы начать подбор недвижимости, отправьте /start"
+        )
 
 
 def ensure_directories() -> None:

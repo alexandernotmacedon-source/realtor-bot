@@ -31,6 +31,7 @@ class ConversationState(Enum):
 
 class ClientStatus(Enum):
     """Client lead statuses."""
+    DRAFT = "draft"  # Temporary, during conversation
     NEW = "new"
     CONTACTED = "contacted"
     VIEWING = "viewing"
@@ -232,8 +233,6 @@ class MessageTemplates:
 {summary}
 
 Я подберу для вас актуальные варианты и пришлю на рассмотрение. После этого можно обсудить детали и договориться о просмотре.
-
-Обычно это занимает несколько часов в рабочее время.
 """
     
     @staticmethod

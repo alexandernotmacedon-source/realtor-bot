@@ -24,8 +24,10 @@ from bot.realtor_handlers import (
     register_command,
     clients_command,
     stats_command,
+    link_command,
     client_detail_command,
     export_command,
+    developers_command,
     handle_realtor_phone,
     handle_realtor_company,
     button_callback,
@@ -67,6 +69,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/clients — Список клиентов\n"
             "/client &lt;id&gt; — Детали клиента (пример: /client 5)\n"
             "/stats — Статистика\n"
+            "/link — Ваша реферальная ссылка\n"
             "/export — Экспорт клиентов (скоро)\n\n"
             "🔗 <b>Интеграции:</b>\n"
             "/drive_setup — Подключить Google Drive\n"
@@ -76,7 +79,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "⚙️ <b>Прочее:</b>\n"
             "/register — Регистрация (если ещё не зарегистрированы)\n"
             "/cancel — Отмена действия\n\n"
-            "💡 <b>Совет:</b> Дайте клиентам ссылку на бота — они сами пройдут опрос!"
+            "💡 <b>Совет:</b> Отправьте клиентам свою /link — они сами пройдут опрос!"
         )
     else:
         text = (
@@ -85,6 +88,48 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
     await msg.reply_text(text, parse_mode="HTML")
+
+
+@with_middleware
+async def auto_restart_for_existing_client(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Auto-restart dialog for existing clients outside of conversation.
+    
+    If user is an existing client (not realtor) and sends any message,
+    automatically restart the dialog as if they sent /start.
+    Only restarts if user is NOT already in an active conversation.
+    """
+    user = update.effective_user
+    msg = update.effective_message
+    if not user or not msg or not msg.text:
+        return
+    
+    # Skip commands
+    if msg.text.startswith("/"):
+        return
+    
+    # Check if user is already in an active client conversation
+    # If client_info exists, they're in a conversation - don't restart
+    if context.user_data.get("client_info"):
+        return
+    
+    repo = Container.get_repository()
+    
+    # Skip realtors
+    if await repo.get_realtor(user.id):
+        return
+    
+    # Check if user is an existing client by looking through realtors
+    realtors = await repo.get_all_realtors()
+    is_existing_client = False
+    for realtor in realtors:
+        existing = await repo.get_client_by_telegram(user.id, realtor.id)
+        if existing:
+            is_existing_client = True
+            break
+    
+    if is_existing_client:
+        # Restart dialog by calling start_command
+        await start_command(update, context)
 
 
 __all__ = [
@@ -97,6 +142,7 @@ __all__ = [
     "stats_command",
     "client_detail_command",
     "export_command",
+    "link_command",
     # client conversation
     "handle_client_llm_message",
     "handle_client_voice",
@@ -111,6 +157,8 @@ __all__ = [
     "drive_auth_code_handler",
     # callbacks
     "button_callback",
+    # auto-restart
+    "auto_restart_for_existing_client",
     # states
     "STATE_REALTOR_PHONE",
     "STATE_REALTOR_COMPANY",

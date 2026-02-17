@@ -53,7 +53,7 @@ _QUESTIONNAIRE: list[tuple[str, str]] = [
     ),
     (
         "contact",
-        "Как с вами связаться? 📞\n\nОтправьте телефон или ник в Telegram/WhatsApp:\n• +995 XXX XXX XXX\n• @username",
+        "Когда вам удобно, чтобы я позвонила? 📞\n\nНапишите:\n• Сейчас можно\n• Через час\n• После 18:00\n• Лучше пишите в Telegram",
     ),
     (
         "notes",
@@ -67,16 +67,69 @@ async def _is_realtor(user_id: int) -> bool:
     return (await repo.get_realtor(user_id)) is not None
 
 
-async def _get_default_realtor() -> Optional[Any]:
-    """Get assigned realtor for client.
+async def _get_realtor_by_id(realtor_id: int) -> Optional[Any]:
+    """Get realtor by specific ID."""
+    repo = Container.get_repository()
+    return await repo.get_realtor(realtor_id)
 
-    текущая логика MVP: первый активный риелтор.
+
+async def _get_default_realtor() -> Optional[Any]:
+    """Get assigned realtor for client using round-robin distribution.
+
+    Cycles through active realtors to distribute clients evenly.
     """
     repo = Container.get_repository()
     realtors = await repo.get_all_realtors()
-    for r in realtors:
-        if r.is_active:
-            return r
+    active_realtors = [r for r in realtors if r.is_active]
+
+    if not active_realtors:
+        return None
+
+    if len(active_realtors) == 1:
+        return active_realtors[0]
+
+    # Load last assigned index from a simple file-based tracker
+    import json
+    import os
+    tracker_path = Path("./data/last_assigned_realtor.json")
+
+    last_index = 0
+    if tracker_path.exists():
+        try:
+            with open(tracker_path, 'r') as f:
+                data = json.load(f)
+                last_index = data.get('index', 0)
+        except (json.JSONDecodeError, IOError):
+            last_index = 0
+
+    # Calculate next index (round-robin)
+    next_index = (last_index + 1) % len(active_realtors)
+
+    # Save the new index
+    try:
+        with open(tracker_path, 'w') as f:
+            json.dump({'index': next_index}, f)
+    except IOError:
+        pass  # Non-critical, continue anyway
+
+    return active_realtors[next_index]
+
+
+def _parse_referral_code(context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
+    """Parse referral code from /start command args.
+    
+    Format: /start ref_123 where 123 is realtor_id
+    Returns: realtor_id or None
+    """
+    if not context.args:
+        return None
+    
+    arg = context.args[0]
+    if arg.startswith("ref_"):
+        try:
+            return int(arg.split("_")[1])
+        except (IndexError, ValueError):
+            return None
     return None
 
 
@@ -106,6 +159,44 @@ async def _ask_current_question(update: Update, context: ContextTypes.DEFAULT_TY
         await update.effective_message.reply_text(text)
 
 
+async def _autosave_client_draft(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Autosave client draft to database after each answer."""
+    repo = Container.get_repository()
+    info: Dict[str, Any] = context.user_data.get("client_info", {})
+    
+    if not info.get("telegram_id"):
+        return
+    
+    # Check if draft already exists
+    existing_id = context.user_data.get("draft_client_id")
+    
+    client = ClientModel(
+        id=existing_id,
+        telegram_id=int(info["telegram_id"]),
+        realtor_id=int(info.get("realtor_id", 0)),
+        telegram_username=info.get("telegram_username"),
+        name=info.get("name", "— (в процессе)"),
+        budget=info.get("budget", ""),
+        size=info.get("size", ""),
+        location=info.get("location", ""),
+        rooms=info.get("rooms", ""),
+        ready_status=info.get("ready_status", ""),
+        contact=info.get("contact", ""),
+        notes=info.get("notes", ""),
+        status="draft",  # Temporary status
+    )
+    
+    try:
+        if existing_id:
+            client = await repo.update_client(client)
+        else:
+            client = await repo.create_client(client)
+            context.user_data["draft_client_id"] = client.id
+            logger.info(f"Created client draft ID: {client.id}")
+    except Exception as e:
+        logger.error(f"Failed to autosave draft: {e}")
+
+
 async def _handle_questionnaire_answer(update: Update, context: ContextTypes.DEFAULT_TYPE, answer: str) -> int:
     """Handle structured questionnaire answer; complete when finished."""
 
@@ -120,6 +211,9 @@ async def _handle_questionnaire_answer(update: Update, context: ContextTypes.DEF
         value = ""
 
     context.user_data.setdefault("client_info", {})[field] = value
+    
+    # AUTOSAVE: Save draft after each answer
+    await _autosave_client_draft(update, context)
 
     # Next question
     _set_question_step_index(context.user_data, _question_step_index(context.user_data) + 1)
@@ -134,6 +228,7 @@ async def _handle_questionnaire_answer(update: Update, context: ContextTypes.DEF
 async def _notify_realtor_about_new_client(
     context: ContextTypes.DEFAULT_TYPE,
     client: ClientModel,
+    selected_apartment: dict = None,
 ) -> None:
     repo = Container.get_repository()
     realtor = await repo.get_realtor(client.realtor_id)
@@ -153,9 +248,14 @@ async def _notify_realtor_about_new_client(
         notes = client.notes
         notif_msg += f"\n📝 {notes[:200]}..." if len(notes) > 200 else f"\n📝 {notes}"
 
+    # Add selected apartment info (highlighted!)
+    if selected_apartment:
+        notif_msg += (
+            f"\n\n⭐ <b>ВЫБРАЛ ВАРИАНТ:</b>\n"
+            f"{selected_apartment.get('developer')} — кв. {selected_apartment.get('apartment_id')}\n"
+        )
+
     keyboard = [[InlineKeyboardButton("👤 Открыть карточку", callback_data=f"client:{client.id}")]]
-    if client.contact:
-        keyboard[0].append(InlineKeyboardButton("📞 Позвонить", url=f"tel:{client.contact}"))
 
     if client.telegram_username:
         keyboard.append([
@@ -173,6 +273,57 @@ async def _notify_realtor_about_new_client(
     )
 
 
+async def _search_and_format_apartments(
+    client_info: Dict[str, Any],
+    max_results: int = 5
+) -> tuple[Optional[str], list]:
+    """Search inventory for matching apartments and format results.
+    
+    Returns tuple of (formatted_message, matches_list) or (None, []) if no matches.
+    """
+    try:
+        from integrations.inventory import inventory_matcher
+        from integrations.google_drive import drive_manager
+        
+        # Ensure drive is authorized
+        if not drive_manager.is_authorized():
+            logger.warning("Google Drive not authorized, cannot search inventory")
+            return None, []
+        
+        # Refresh inventory if needed
+        if not inventory_matcher.inventory_cache:
+            success = await asyncio.to_thread(inventory_matcher.refresh_inventory)
+            if not success:
+                return None, []
+        
+        # Search for matches
+        matches = await asyncio.to_thread(
+            inventory_matcher.match_apartments,
+            budget=client_info.get("budget"),
+            size=client_info.get("size"),
+            location=client_info.get("location"),
+            rooms=client_info.get("rooms"),
+            ready_status=client_info.get("ready_status"),
+            max_results=max_results
+        )
+        
+        if not matches:
+            return None, []
+        
+        # Format results - simple and clean
+        lines = ["\n🏠 <b>Варианты для вас:</b>\n"]
+        for i, match in enumerate(matches, 1):
+            lines.append(f"{i}. {inventory_matcher.format_match(match)}")
+        
+        lines.append("\n💬 Напишите номер варианта — пришлю фото и детали!")
+        
+        return "\n".join(lines), matches
+        
+    except Exception as e:
+        logger.error(f"Failed to search apartments: {e}")
+        return None, []
+
+
 async def _complete_client_conversation(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -181,10 +332,14 @@ async def _complete_client_conversation(
 
     info: Dict[str, Any] = context.user_data.get("client_info", {})
     realtor_id = info.get("realtor_id")
+    
+    # Get draft ID if exists
+    draft_id = context.user_data.get("draft_client_id")
 
     realtor = await repo.get_realtor(realtor_id) if realtor_id else None
 
     client = ClientModel(
+        id=draft_id,  # Use existing draft ID if available
         telegram_id=int(info["telegram_id"]),
         realtor_id=int(realtor_id),
         telegram_username=info.get("telegram_username"),
@@ -196,25 +351,148 @@ async def _complete_client_conversation(
         ready_status=info.get("ready_status", ""),
         contact=info.get("contact", ""),
         notes=info.get("notes", ""),
+        status="new",  # Final status
     )
 
-    client = await repo.create_client(client)
+    if draft_id:
+        client = await repo.update_client(client)
+        logger.info(f"Finalized client from draft ID: {draft_id}")
+    else:
+        client = await repo.create_client(client)
 
     summary = client.to_summary()
     completion_msg = MessageTemplates.format_client_completion(summary=summary)
 
+    # Search for matching apartments
+    apartments_msg, matches = await _search_and_format_apartments(info)
+    if apartments_msg:
+        completion_msg += apartments_msg
+        # Wait for client to select apartment - don't ask for contact yet
+        completion_msg += "\n\n💬 Какой вариант вам понравился? Напишите номер, или скажите если ничего не подошло — подберу ещё!"
+        # Save matches for later reference
+        context.user_data["shown_apartments"] = matches
+        context.user_data["awaiting_apartment_selection"] = True
+    else:
+        completion_msg += "\n\n🔍 Сейчас проверю наличие подходящих вариантов и пришлю результаты."
+
     if update.effective_message:
-        await update.effective_message.reply_text(completion_msg)
+        await update.effective_message.reply_text(completion_msg, parse_mode="HTML")
 
     # Notify realtor
     try:
-        await _notify_realtor_about_new_client(context, client)
+        await _notify_realtor_about_new_client(context, client, matches)
     except Exception as e:
         logger.error("Failed to notify realtor: %s", e, exc_info=True)
 
-    # Clear user data
-    context.user_data.clear()
+    # Keep conversation open for contact request, but mark client as created
+    context.user_data["client_created"] = True
+    context.user_data["client_id"] = client.id
 
+    return 8  # Keep conversation open for follow-up contact
+
+
+async def _handle_apartment_selection(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+) -> int:
+    """Handle client's apartment selection response."""
+
+    sanitized = sanitize_user_text(text, max_len=500).lower()
+
+    # Check if client said nothing fits
+    negative_responses = ['не', 'ничего', 'не подошло', 'не нравится', 'другое', 'другой', 'нет']
+    if any(neg in sanitized for neg in negative_responses) or 'подошло' in sanitized:
+        await update.effective_message.reply_text(
+            "Поняла! Давайте уточним критерии — что именно не устроило? "
+            "Или может посмотрим варианты в другом районе/бюджете? 🏠"
+        )
+        # Clear selection flag but keep conversation open
+        context.user_data.pop("awaiting_apartment_selection", None)
+        return 8
+
+    # Try to extract apartment number (1, 2, 3, etc.)
+    import re
+    numbers = re.findall(r'\b(\d+)\b', sanitized)
+
+    if numbers:
+        apt_num = int(numbers[0])
+        matches = context.user_data.get("shown_apartments", [])
+
+        if 1 <= apt_num <= len(matches):
+            match = matches[apt_num - 1]
+            apt_id = match.data.get('ბინა/apartment', match.data.get('№', '—'))
+            developer = match.developer
+
+            await update.effective_message.reply_text(
+                f"✅ Отличный выбор! Вариант #{apt_num} — {developer}, квартира {apt_id}.\n\n"
+                f"📐 Хотите, чтобы я выслала планировку этой квартиры?"
+            )
+
+            # Mark as interested, now awaiting contact
+            context.user_data.pop("awaiting_apartment_selection", None)
+            context.user_data["awaiting_contact"] = True
+            context.user_data["selected_apartment"] = {
+                "number": apt_num,
+                "developer": developer,
+                "apartment_id": apt_id
+            }
+            return 8
+        else:
+            await update.effective_message.reply_text(
+                f"Я вижу вы написали {apt_num}, но у меня показано {len(matches)} вариантов. "
+                f"Напишите номер от 1 до {len(matches)}, или скажите если ничего не подошло 💬"
+            )
+            return 8
+
+    # Couldn't parse selection - ask again
+    await update.effective_message.reply_text(
+        "Напишите, пожалуйста, номер варианта который понравился (например: 1, 2 или 3), "
+        "или скажите если ничего не подошло 🏠"
+    )
+    return 8
+
+
+async def _handle_contact_followup(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    text: str,
+) -> int:
+    """Handle contact information after client selected apartment."""
+
+    client_id = context.user_data.get("client_id")
+    if not client_id:
+        return ConversationHandler.END
+
+    sanitized = sanitize_user_text(text, max_len=200)
+
+    # Update client with contact info
+    repo = Container.get_repository()
+    client = await repo.get_client(client_id)
+    if client:
+        client.contact = sanitized
+        await repo.update_client(client)
+
+        # Smooth transition to direct communication - no "I passed info" message
+        selected = context.user_data.get("selected_apartment", {})
+        if selected:
+            await update.effective_message.reply_text(
+                f"✅ Отлично! Передаю контакт Софе по выбранному варианту "
+                f"({selected.get('developer')}, кв. {selected.get('apartment_id')}).\n\n"
+                f"Она свяжется с вами {sanitized}! 📞"
+            )
+        else:
+            await update.effective_message.reply_text(
+                f"✅ Отлично! Передаю контакт Софе — она свяжется с вами {sanitized}! 📞"
+            )
+
+        # Notify realtor with selected apartment info
+        try:
+            await _notify_realtor_about_new_client(context, client, selected)
+        except Exception as e:
+            logger.error("Failed to notify realtor about contact update: %s", e)
+
+    context.user_data.clear()
     return ConversationHandler.END
 
 
@@ -224,6 +502,14 @@ async def _process_client_text(
     text: str,
 ) -> int:
     """Single path for processing a client message."""
+
+    # Handle apartment selection after showing options
+    if context.user_data.get("awaiting_apartment_selection"):
+        return await _handle_apartment_selection(update, context, text)
+
+    # Handle contact info after client selected apartment
+    if context.user_data.get("awaiting_contact"):
+        return await _handle_contact_followup(update, context, text)
 
     llm = Container.get_llm_service()
 
@@ -260,6 +546,9 @@ async def _process_client_text(
             client_info[field] = sanitize_user_text(str(info[field]), max_len=500)
 
     context.user_data["client_info"] = client_info
+    
+    # AUTOSAVE: Save draft after each LLM extraction
+    await _autosave_client_draft(update, context)
 
     # Complete
     if info.get("is_complete"):
@@ -298,7 +587,16 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     # Realtor registration in progress is handled by realtor conversation
 
-    realtor = await _get_default_realtor()
+    # Try to get realtor from referral code first, then fallback to default
+    referral_realtor_id = _parse_referral_code(context)
+    if referral_realtor_id:
+        realtor = await _get_realtor_by_id(referral_realtor_id)
+        if not realtor:
+            # Referral code invalid, fallback to default
+            realtor = await _get_default_realtor()
+    else:
+        realtor = await _get_default_realtor()
+    
     if not realtor:
         await update.effective_message.reply_text(
             "⚠️ Пока нет доступных риелторов.\n"
@@ -306,16 +604,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         )
         return ConversationHandler.END
 
-    # Existing client?
+    # Check for existing client — allow new conversation
     repo = Container.get_repository()
     existing = await repo.get_client_by_telegram(user.id, realtor.id)
-    if existing:
-        await update.effective_message.reply_text(
-            "👋 С возвращением!\n\n"
-            "Мы уже получали вашу заявку. "
-            f"{realtor.full_name} скоро с вами свяжется."
-        )
-        return ConversationHandler.END
+    is_returning = existing is not None
 
     context.user_data["client_info"] = {
         "telegram_id": user.id,
@@ -325,30 +617,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     }
     context.user_data["conversation"] = []
 
-    await update.effective_message.reply_text(
-        MessageTemplates.format_client_welcome(realtor_name=realtor.full_name)
-    )
-
-    # Seed first assistant message (LLM if available; otherwise questionnaire)
-    llm = Container.get_llm_service()
-
-    if not getattr(llm, "providers", {}):
-        _set_question_step_index(context.user_data, 0)
-        await _ask_current_question(update, context)
-        return 8
-
-    first_message = await llm.generate_response(
-        [{"role": "user", "content": "Привет! Я хочу подобрать квартиру в Батуми."}]
-    )
-
-    if first_message:
-        await update.effective_message.reply_text(first_message)
-        context.user_data["conversation"].append({"role": "assistant", "content": first_message})
+    # Send welcome message using template with realtor's name
+    if is_returning:
+        welcome_text = f"👋 С возвращением! Рада снова помочь с подбором недвижимости.\n\nДавайте уточним критерии — на какую сумму сейчас рассматриваете покупку? 💫"
     else:
-        # LLM temporarily failed → fallback to structured questionnaire
-        _set_question_step_index(context.user_data, 0)
-        await _ask_current_question(update, context)
-        return 8
+        welcome_text = f"Здравствуйте! Меня зовут {realtor.full_name}, я риелтор по недвижимости в Батуми. Рада помочь с подбором квартиры! 💫\n\nДавайте начнём с бюджета — на какую сумму вы рассматриваете покупку?"
+    await update.effective_message.reply_text(welcome_text)
+    
+    # Initialize conversation history for LLM
+    context.user_data["conversation"] = [
+        {"role": "system", "content": f"Риелтор: {realtor.full_name}"},
+        {"role": "assistant", "content": welcome_text}
+    ]
 
     return 8  # ConversationState.CLIENT_COMPLETE.value
 
