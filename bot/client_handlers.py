@@ -323,8 +323,7 @@ async def _search_and_format_apartments(
         for i, match in enumerate(matches, 1):
             lines.append(f"{i}. {inventory_matcher.format_match(match)}")
         
-        lines.append("\n💬 Напишите номер варианта, или «ещё»")
-        
+        # Note: prompt is added by caller (_complete_client_conversation or _handle_apartment_selection)
         return "\n".join(lines), matches
         
     except Exception as e:
@@ -423,6 +422,7 @@ async def _handle_apartment_selection(
         )
         
         if apartments_msg and matches:
+            apartments_msg += "\n\n💬 Напишите номер, или «ещё»"
             await update.effective_message.reply_text(apartments_msg, parse_mode="HTML")
             # Save new offset and matches
             context.user_data["search_offset"] = new_offset
