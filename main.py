@@ -165,7 +165,7 @@ async def _prompt_start_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
     
     # Skip if user is a realtor
-    from database.container import Container
+    from core.container import Container
     repo = Container.get_repository()
     if update.effective_user and await repo.get_realtor(update.effective_user.id):
         return
