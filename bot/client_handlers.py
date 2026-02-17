@@ -446,6 +446,13 @@ async def _handle_apartment_selection(
         )
         # Clear selection flag but keep conversation open
         context.user_data.pop("awaiting_apartment_selection", None)
+        # Block auto-search until client provides new criteria
+        context.user_data["awaiting_criteria_update"] = True
+        # Clear invalid budget to force re-entry
+        client_info = context.user_data.get("client_info", {})
+        if client_info.get("budget") and not any(c.isdigit() for c in str(client_info.get("budget", ""))):
+            client_info["budget"] = None
+            context.user_data["client_info"] = client_info
         return 8
 
     # Try to extract apartment number (1, 2, 3, etc.)
@@ -584,11 +591,16 @@ async def _process_client_text(
 
     context.user_data["client_info"] = client_info
     
+    # If we got a valid budget (with numbers), clear the criteria update block
+    budget = client_info.get("budget", "")
+    if budget and any(c.isdigit() for c in str(budget)):
+        context.user_data.pop("awaiting_criteria_update", None)
+    
     # AUTOSAVE: Save draft after each LLM extraction
     await _autosave_client_draft(update, context)
 
-    # Complete
-    if info.get("is_complete"):
+    # Complete (only if not awaiting criteria update)
+    if info.get("is_complete") and not context.user_data.get("awaiting_criteria_update"):
         return await _complete_client_conversation(update, context)
 
     # Continue dialog
